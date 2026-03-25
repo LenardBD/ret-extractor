@@ -323,6 +323,17 @@ export default function App() {
   const [expected,setExpected]=useState([]);
   const fileRef=useRef(), importRef=useRef();
 
+  const clearAll = () => {
+    setFiles([]);
+    setResults([]);
+    setStatuses({});
+    setImported(false);
+    setReviewMode(false);
+    setExpected([]);
+    if (fileRef.current) fileRef.current.value = "";
+    if (importRef.current) importRef.current.value = "";
+  };
+
   useEffect(()=>{
     if (!window.XLSX) {
       const s=document.createElement("script");
@@ -467,6 +478,10 @@ export default function App() {
           <button onClick={runExtraction} disabled={!files.length||loadingCount>0}
             style={{padding:"8px 20px",fontSize:13,cursor:files.length&&!loadingCount?"pointer":"not-allowed",opacity:!files.length||loadingCount>0?.45:1,background:files.length&&!loadingCount?P.primary:"transparent",color:files.length&&!loadingCount?"#fff":P.text,border:`0.5px solid ${P.border}`,borderRadius:8}}>
             {loadingCount>0?`Extracting ${loadingCount} file${loadingCount!==1?"s":""}…`:"Extract parameters"}
+          </button>
+          <button onClick={clearAll} disabled={!files.length&&!results.length}
+            style={{padding:"8px 20px",fontSize:13,cursor:files.length||results.length?"pointer":"not-allowed",opacity:!files.length&&!results.length?.45:1,background:"transparent",color:"#A32D2D",border:"0.5px solid #F09595",borderRadius:8}}>
+            Clear all
           </button>
           {files.length>0&&<span style={{fontSize:12,color:P.dark,opacity:.7}}>{files.length} file{files.length!==1?"s":""} ready</span>}
         </div>
