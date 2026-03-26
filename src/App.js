@@ -10,6 +10,7 @@ const P = {
   mid:"#AFA9EC", text:"#26215C", border:"#CECBF6",
 };
 
+const SECTOR_ORDER = ["Alpha","Beta","Gamma","Delta","Epsilon","Zeta"];
 const SECTOR_MAP = {"1":"Alpha","2":"Beta","3":"Gamma","4":"Delta","5":"Epsilon","6":"Zeta"};
 
 function detectSector(stationId, sectorId) {
@@ -44,7 +45,6 @@ function detectTechnology(stationId, freqBand) {
   return "";
 }
 
-// Safe field extractor from text
 function getVal(text, ...keys) {
   for (const key of keys) {
     try {
@@ -56,7 +56,6 @@ function getVal(text, ...keys) {
   return "";
 }
 
-// ── TXTRPT PARSER ──
 function parseTxtrpt(text, fileName) {
   const rows = [];
   const parts = text.split(/(?=^\s*Address\s*:\s*\d+)/im).filter(p=>/Address\s*:\s*\d+/i.test(p));
@@ -84,7 +83,6 @@ function parseTxtrpt(text, fileName) {
   return rows;
 }
 
-// ── TABRPT PARSER ──
 function parseTabrpt(text, fileName) {
   const lines = text.split(/\r?\n/).filter(l=>l.trim());
   if (lines.length<2) return [];
@@ -110,69 +108,40 @@ function parseTabrpt(text, fileName) {
   });
 }
 
-// ── ALC-ALD PDF PARSER (Ericsson) ──
 function parseALCReport(text, fileName) {
   const norm = text.replace(/[ \t]+/g," ");
-
-  // RET Serial — look for "Vendor Code: XX" immediately followed by "Serial Number: YYYY"
-  // This handles PDF.js stream where they appear consecutively
   const deviceSection  = norm.split(/Subunit\s*\[/i)[0];
   const subunitSection = norm.includes("Subunit[") ? norm.slice(norm.indexOf("Subunit[")) : norm;
-
   let retSerial = "";
-  // Try combined pattern: Vendor Code + Serial Number close together in device section
   const combinedM = deviceSection.match(/Vendor\s*Code\s*:\s*(\S+)\s+Serial\s*Number\s*:\s*(\S+)/i);
-  if (combinedM) {
-    retSerial = combinedM[1].trim() + combinedM[2].trim();
-  } else {
-    // Fallback: Site Overview Unique ID row
+  if (combinedM) retSerial = combinedM[1].trim()+combinedM[2].trim();
+  else {
     const uniqueM = norm.match(/\d+\s+RET\s+(CP\s*\S+)\s+AISG/i);
     retSerial = uniqueM ? uniqueM[1].replace(/\s+/g,"") : "";
   }
-
-  // Tilt [deg] — from Subunit section
   const tiltM = subunitSection.match(/Tilt\s*\[deg\]\s*:\s*([\d.]+)/i);
-  const tilt  = tiltM ? tiltM[1] : "";
-
-  // Sector ID — from Subunit section
   const sectorIdM = subunitSection.match(/Sector\s*ID\s*:\s*(\S+)/i);
-  const sectorId  = sectorIdM ? sectorIdM[1].trim() : "";
-
-  // Base Station ID — from Subunit section
   const stationM  = subunitSection.match(/Basestation\s*ID\s*:\s*(\S+)/i);
-  const stationId = stationM ? stationM[1].trim() : "";
-
-  // Antenna Serial Number — from Subunit section only
   const antSerialM = subunitSection.match(/Antenna\s*Serial\s*Number\s*:\s*(\S+)/i);
-  const antSerial  = antSerialM ? antSerialM[1].trim() : "";
-
-  // Bearing — from Subunit section
   const bearingM = subunitSection.match(/Antenna\s*Bearing\s*\[deg\]\s*:\s*([\d.]+)/i);
-  const bearing  = bearingM ? bearingM[1] : "";
-
-  // Mechanical Tilt — from Subunit section
   const mechM    = subunitSection.match(/Mechanical\s*Tilt\s*\[deg\]\s*:\s*([\d.]+)/i);
-  const mechTilt = mechM ? mechM[1] : "";
-
-  // Frequency band — from Subunit section
   const freqM    = subunitSection.match(/Antenna\s*Operating\s*Band\s*\[MHz\]\s*:\s*([\d\s.\-–]+)/i);
-  const freqBand = freqM ? freqM[1].trim() : "";
-
+  const sectorId  = sectorIdM ? sectorIdM[1].trim() : "";
+  const stationId = stationM  ? stationM[1].trim()  : "";
   if (!retSerial && !stationId) return [];
   return [{ fileName, address:"1", data:{
     "RET Serial Number Tag":     retSerial,
-    "EDT or RET Value":          tilt,
+    "EDT or RET Value":          tiltM ? tiltM[1] : "",
     "Sector ID":                 sectorId,
     "Base Station ID":           stationId,
-    "Antenna Serial Number Tag": antSerial,
-    "Bearing":                   bearing,
-    "Mechanical Tilt":           mechTilt,
+    "Antenna Serial Number Tag": antSerialM ? antSerialM[1].trim() : "",
+    "Bearing":                   bearingM ? bearingM[1] : "",
+    "Mechanical Tilt":           mechM ? mechM[1] : "",
     "Sector":                    detectSector(stationId,sectorId),
-    "Technology":                detectTechnology(stationId,freqBand),
+    "Technology":                detectTechnology(stationId, freqM ? freqM[1].trim() : ""),
   }}];
 }
 
-// ── COMMSCOPE PDF PARSER ──
 function parseCommScopePDF(text, fileName) {
   const norm = text.replace(/[ \t]+/g," ");
   const rows = [];
@@ -180,40 +149,53 @@ function parseCommScopePDF(text, fileName) {
   const etRe = /(CP\S+?)\s+\d+\s+RET\s+OK\s+\S+\s+\S+\s+\S+\s+[\d.]+\s+([\d.]+)/gi;
   let em;
   while ((em=etRe.exec(norm))!==null) etiltMap[em[1]]=em[2];
-  const blocks = norm.split(/(?=Configuring Device\s+CP)/i).filter(b=>/Configuring Device\s+CP/i.test(b));
-  for (const block of blocks) {
-    const titleM = block.match(/Configuring Device\s+(CP\S+?)\s+at\s+Address\s*(\d+)/i);
-    if (!titleM) continue;
-    const retSerial=titleM[1], address=titleM[2];
-    const stationId = getVal(block,"Base Station ID");
-    const sectorId  = getVal(block,"Sector ID");
-    const freqBand  = getVal(block,"Oper. Band","Oper Band");
-    const bearing   = getVal(block,"Bearing").replace(/[^\d.]/g,"");
-    const mechTilt  = getVal(block,"Mechanical Tilt").replace(/[^\d.]/g,"");
-    const antSerial = getVal(block,"Antenna Serial #","Antenna Serial Number","Antenna Serial");
-    let sector="";
-    for (const s of ["ALPHA","BETA","GAMMA","DELTA","EPSILON","ZETA"]) {
-      if (block.toUpperCase().includes(s)) { sector=s[0]+s.slice(1).toLowerCase(); break; }
+  const isActuator = /Set Actuator Position/i.test(norm);
+  if (isActuator) {
+    const blocks = norm.split(/(?=Set Actuator Position,\s*Device\s+CP)/i).filter(b=>/Set Actuator Position,\s*Device\s+CP/i.test(b));
+    for (const block of blocks) {
+      const titleM = block.match(/Set Actuator Position,\s*Device\s+(CP\S+?)\s+at\s+Address\s*(\d+)/i);
+      if (!titleM) continue;
+      const retSerial=titleM[1], address=titleM[2];
+      const g = (key) => { const m = block.match(new RegExp(key+"\\s*:?\\s*#?\\s*(\\S+)","i")); return m?m[1].trim():""; };
+      const stationId=g("Base Station ID"), antSerial=g("Antenna Serial"), freqBand=g("Oper\\.? Band");
+      const bearing=g("Bearing").replace(/[^\d.]/g,""), mechTilt=g("Mechanical Tilt").replace(/[^\d.]/g,"");
+      const ctM=block.match(/Current\s*Tilt\s*:?\s*([\d.]+)/i);
+      const sfM=block.match(/Sector\s*:?\s*([A-Z]+)/i);
+      const sf=sfM?sfM[1].trim():"";
+      rows.push({ fileName, address, data:{
+        "RET Serial Number Tag":     retSerial,
+        "EDT or RET Value":          ctM?ctM[1]:"",
+        "Sector ID":                 "",
+        "Base Station ID":           stationId,
+        "Antenna Serial Number Tag": antSerial,
+        "Bearing":                   bearing,
+        "Mechanical Tilt":           mechTilt,
+        "Sector":                    sf?sf[0]+sf.slice(1).toLowerCase():detectSector(stationId,""),
+        "Technology":                detectTechnology(stationId,freqBand),
+      }});
     }
-    if (!sector) sector=detectSector(stationId,sectorId);
-    let tech="";
-    const hM=block.match(/(?:ALPHA|BETA|GAMMA|DELTA)\s+(AWS|PCS|LB|CBRS)/i);
-    if (hM) {
-      const t=hM[1].toUpperCase();
-      tech=t==="LB"?"Lowband":t==="AWS"?"2100":t==="PCS"?"1900LTE":"CBRS";
+  } else {
+    const blocks = norm.split(/(?=Configuring Device\s+CP)/i).filter(b=>/Configuring Device\s+CP/i.test(b));
+    for (const block of blocks) {
+      const titleM = block.match(/Configuring Device\s+(CP\S+?)\s+at\s+Address\s*(\d+)/i);
+      if (!titleM) continue;
+      const retSerial=titleM[1], address=titleM[2];
+      const stationId=getVal(block,"Base Station ID"), sectorId=getVal(block,"Sector ID");
+      const freqBand=getVal(block,"Oper\\.? Band","Oper Band");
+      const bearing=getVal(block,"Bearing").replace(/[^\d.]/g,""), mechTilt=getVal(block,"Mechanical Tilt").replace(/[^\d.]/g,"");
+      const antSerial=getVal(block,"Antenna Serial #","Antenna Serial Number","Antenna Serial");
+      let sector="";
+      for (const s of ["ALPHA","BETA","GAMMA","DELTA","EPSILON","ZETA"]) { if (block.toUpperCase().includes(s)){sector=s[0]+s.slice(1).toLowerCase();break;} }
+      if (!sector) sector=detectSector(stationId,sectorId);
+      let tech=""; const hM=block.match(/(?:ALPHA|BETA|GAMMA|DELTA)\s+(AWS|PCS|LB|CBRS)/i);
+      if (hM){const t=hM[1].toUpperCase();tech=t==="LB"?"Lowband":t==="AWS"?"2100":t==="PCS"?"1900LTE":"CBRS";}
+      if (!tech) tech=detectTechnology(stationId,freqBand);
+      rows.push({ fileName, address, data:{
+        "RET Serial Number Tag":retSerial,"EDT or RET Value":etiltMap[retSerial]||"",
+        "Sector ID":sectorId,"Base Station ID":stationId,"Antenna Serial Number Tag":antSerial,
+        "Bearing":bearing,"Mechanical Tilt":mechTilt,"Sector":sector,"Technology":tech,
+      }});
     }
-    if (!tech) tech=detectTechnology(stationId,freqBand);
-    rows.push({ fileName, address, data:{
-      "RET Serial Number Tag":     retSerial,
-      "EDT or RET Value":          etiltMap[retSerial]||"",
-      "Sector ID":                 sectorId,
-      "Base Station ID":           stationId,
-      "Antenna Serial Number Tag": antSerial,
-      "Bearing":                   bearing,
-      "Mechanical Tilt":           mechTilt,
-      "Sector":                    sector,
-      "Technology":                tech,
-    }});
   }
   return rows;
 }
@@ -223,50 +205,37 @@ function parseFile(text, fileName) {
   if (n.endsWith(".tabrpt")) return parseTabrpt(text,fileName);
   if (n.endsWith(".pdf")) {
     if (/ALC.*ALD.*Configuration.*Report/i.test(text)) return parseALCReport(text,fileName);
-    if (/Configuring\s*Device\s*CP/i.test(text)) return parseCommScopePDF(text,fileName);
+    if (/Configuring\s*Device\s*CP|Set\s*Actuator\s*Position/i.test(text)) return parseCommScopePDF(text,fileName);
     return parseTxtrpt(text,fileName);
   }
   return parseTxtrpt(text,fileName);
 }
 
-// ── CSV IMPORT PARSER ──
 function parseCSVImport(csv, fileName) {
   const lines=csv.split(/\r?\n/).filter(l=>l.trim());
   if (lines.length<2) return [];
   const headers=lines[0].split(",").map(h=>h.replace(/^"|"$/g,"").trim());
   const col=(cols,...names)=>{
-    for (const name of names) {
-      const i=headers.findIndex(h=>h.toLowerCase()===name.toLowerCase());
-      if (i>=0&&cols[i]) return cols[i].replace(/^"|"$/g,"").replace(/^="?(.*?)"?$/,"$1").trim();
-    }
-    return "";
+    for (const name of names){const i=headers.findIndex(h=>h.toLowerCase()===name.toLowerCase());if(i>=0&&cols[i])return cols[i].replace(/^"|"$/g,"").replace(/^="?(.*?)"?$/,"$1").trim();}return "";
   };
   return lines.slice(1).map((line,i)=>{
-    const cols=line.split(",");
-    const station=col(cols,"Station ID","Base Station ID");
-    const sectorId=col(cols,"Sector ID");
-    const freq=col(cols,"Operating Frequency Band","Antenna Frequency Band");
-    const bearing=col(cols,"Bearing").replace(/\s*degrees?/i,"").trim();
+    const cols=line.split(","), station=col(cols,"Station ID","Base Station ID"), sectorId=col(cols,"Sector ID");
+    const freq=col(cols,"Operating Frequency Band","Antenna Frequency Band"), bearing=col(cols,"Bearing").replace(/\s*degrees?/i,"").trim();
     return { fileName, address:col(cols,"Address")||String(i+1), data:{
-      "RET Serial Number Tag":     col(cols,"Device Serial","RET Serial Number Tag"),
-      "EDT or RET Value":          col(cols,"Elec. Tilt","EDT or RET Value","Electrical Tilt"),
-      "Sector ID":                 sectorId,
-      "Base Station ID":           station,
-      "Antenna Serial Number Tag": col(cols,"Antenna Serial","Antenna Serial Number Tag"),
-      "Bearing":                   bearing,
-      "Mechanical Tilt":           col(cols,"Mech. Tilt","Mechanical Tilt"),
-      "Sector":                    col(cols,"Sector")||detectSector(station,sectorId),
-      "Technology":                col(cols,"Technology")||detectTechnology(station,freq),
+      "RET Serial Number Tag":col(cols,"Device Serial","RET Serial Number Tag"),
+      "EDT or RET Value":col(cols,"Elec. Tilt","EDT or RET Value","Electrical Tilt"),
+      "Sector ID":sectorId,"Base Station ID":station,
+      "Antenna Serial Number Tag":col(cols,"Antenna Serial","Antenna Serial Number Tag"),
+      "Bearing":bearing,"Mechanical Tilt":col(cols,"Mech. Tilt","Mechanical Tilt"),
+      "Sector":col(cols,"Sector")||detectSector(station,sectorId),
+      "Technology":col(cols,"Technology")||detectTechnology(station,freq),
     }};
   });
 }
 
 function readAsText(file) {
   return new Promise((res,rej)=>{
-    const fr=new FileReader();
-    fr.onload=e=>res(e.target.result);
-    fr.onerror=()=>rej(new Error("Could not read "+file.name));
-    fr.readAsText(file,"UTF-8");
+    const fr=new FileReader(); fr.onload=e=>res(e.target.result); fr.onerror=()=>rej(new Error("Could not read "+file.name)); fr.readAsText(file,"UTF-8");
   });
 }
 
@@ -275,19 +244,15 @@ async function readPDFAsText(file) {
   const buf=await file.arrayBuffer();
   const pdf=await window.pdfjsLib.getDocument({data:buf}).promise;
   let out="";
-  for (let i=1;i<=pdf.numPages;i++) {
-    const page=await pdf.getPage(i);
-    const content=await page.getTextContent();
-    out+=content.items.map(it=>it.str).join(" ")+"\n";
-  }
+  for (let i=1;i<=pdf.numPages;i++){const page=await pdf.getPage(i);const content=await page.getTextContent();out+=content.items.map(it=>it.str).join(" ")+"\n";}
   if (out.replace(/\s+/g,"").length<50) throw new Error("IMAGE_BASED_PDF");
   return out;
 }
 
-function exportCSV(results) {
+function exportCSV(rows) {
   const headers=["File Name","Address",...FIELDS];
-  const rows=results.map(r=>[r.fileName,r.address,...FIELDS.map(f=>r.data?.[f]??"")]);
-  const csv=[headers,...rows].map(row=>row.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(",")).join("\n");
+  const data=[headers,...rows.map(r=>[r.fileName,r.address,...FIELDS.map(f=>r.data?.[f]??"")])];
+  const csv=data.map(row=>row.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(",")).join("\n");
   const blob=new Blob([csv],{type:"text/csv"});
   const url=URL.createObjectURL(blob);
   const a=document.createElement("a"); a.href=url; a.download="ret_extracted_data.csv"; a.click();
@@ -314,7 +279,7 @@ const SecHead=({icon,title,sub,right})=>(
 );
 
 export default function App() {
-  const [files,setFiles]=useState([]);  // refresh
+  const [files,setFiles]=useState([]);
   const [results,setResults]=useState([]);
   const [statuses,setStatuses]=useState({});
   const [dragOver,setDragOver]=useState(false);
@@ -323,110 +288,96 @@ export default function App() {
   const [expected,setExpected]=useState([]);
   const fileRef=useRef(), importRef=useRef();
 
-  const clearAll = () => {
-    setFiles([]);
-    setResults([]);
-    setStatuses({});
-    setImported(false);
-    setReviewMode(false);
-    setExpected([]);
-    if (fileRef.current) fileRef.current.value = "";
-    if (importRef.current) importRef.current.value = "";
+  const clearAll=()=>{
+    setFiles([]); setResults([]); setStatuses({}); setImported(false); setReviewMode(false); setExpected([]);
+    if(fileRef.current) fileRef.current.value="";
+    if(importRef.current) importRef.current.value="";
   };
 
   useEffect(()=>{
-    if (!window.XLSX) {
-      const s=document.createElement("script");
-      s.src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js";
-      s.onload=()=>{};
-      document.head.appendChild(s);
-    }
-    if (!window.pdfjsLib) {
-      const s=document.createElement("script");
-      s.src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js";
-      s.onload=()=>{ window.pdfjsLib.GlobalWorkerOptions.workerSrc="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js"; };
-      document.head.appendChild(s);
-    }
+    if(!window.XLSX){const s=document.createElement("script");s.src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js";document.head.appendChild(s);}
+    if(!window.pdfjsLib){const s=document.createElement("script");s.src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js";s.onload=()=>{window.pdfjsLib.GlobalWorkerOptions.workerSrc="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";};document.head.appendChild(s);}
   },[]);
 
   const validExts=[".pdf",".txt",".jpg",".jpeg",".png",".txtrpt",".tabrpt"];
   const addFiles=incoming=>{
     const valid=Array.from(incoming).filter(f=>validExts.some(e=>f.name.toLowerCase().endsWith(e))||f.type.startsWith("image/")||f.type==="application/pdf");
-    setFiles(prev=>{const names=new Set(prev.map(f=>f.name)); return [...prev,...valid.filter(f=>!names.has(f.name))];});
+    setFiles(prev=>{const names=new Set(prev.map(f=>f.name));return [...prev,...valid.filter(f=>!names.has(f.name))];});
   };
   const removeFile=name=>{
-    setFiles(p=>p.filter(f=>f.name!==name));
-    setResults(p=>p.filter(r=>r.fileName!==name));
-    setStatuses(p=>{const n={...p}; delete n[name]; return n;});
+    setFiles(p=>p.filter(f=>f.name!==name)); setResults(p=>p.filter(r=>r.fileName!==name));
+    setStatuses(p=>{const n={...p};delete n[name];return n;});
   };
 
   const runExtraction=async()=>{
     const pending=files.filter(f=>!statuses[f.name]||statuses[f.name]==="error");
-    if (!pending.length) return;
-    setStatuses(prev=>{const n={...prev}; pending.forEach(f=>{n[f.name]="loading";}); return n;});
+    if(!pending.length) return;
+    setStatuses(prev=>{const n={...prev};pending.forEach(f=>{n[f.name]="loading";});return n;});
     const newRows=[];
-    for (const file of pending) {
+    for(const file of pending){
       const n=file.name.toLowerCase();
       const isPDF=n.endsWith(".pdf")||file.type==="application/pdf";
       const isText=n.endsWith(".txtrpt")||n.endsWith(".tabrpt")||n.endsWith(".txt");
-      if (isPDF||isText) {
-        try {
-          const text=isPDF ? await readPDFAsText(file) : await readAsText(file);
+      if(isPDF||isText){
+        try{
+          const text=isPDF?await readPDFAsText(file):await readAsText(file);
           const rows=parseFile(text,file.name);
-          if (!rows.length) throw new Error("No data found");
+          if(!rows.length) throw new Error("No data found");
           newRows.push(...rows);
           setStatuses(p=>({...p,[file.name]:"done"}));
-        } catch(e) {
-          setStatuses(p=>({...p,[file.name]:e.message==="IMAGE_BASED_PDF"?"img_pdf":"error"}));
-        }
-      } else {
-        setStatuses(p=>({...p,[file.name]:"skipped"}));
-      }
+        }catch(e){setStatuses(p=>({...p,[file.name]:e.message==="IMAGE_BASED_PDF"?"img_pdf":"error"}));}
+      } else {setStatuses(p=>({...p,[file.name]:"skipped"}));}
     }
-    setResults(prev=>{const done=new Set(pending.map(f=>f.name)); return [...prev.filter(r=>!done.has(r.fileName)),...newRows];});
+    setResults(prev=>{const done=new Set(pending.map(f=>f.name));return [...prev.filter(r=>!done.has(r.fileName)),...newRows];});
   };
 
   const handleImport=async e=>{
-    const file=e.target.files?.[0]; if (!file) return;
-    e.target.value="";
+    const file=e.target.files?.[0]; if(!file) return; e.target.value="";
     const n=file.name.toLowerCase();
-    try {
-      if ((n.endsWith(".xlsx")||n.endsWith(".xls"))&&window.XLSX) {
+    try{
+      if((n.endsWith(".xlsx")||n.endsWith(".xls"))&&window.XLSX){
         const buf=await file.arrayBuffer();
         const wb=window.XLSX.read(buf,{type:"array"});
         const csv=window.XLSX.utils.sheet_to_csv(wb.Sheets[wb.SheetNames[0]]);
         const rows=parseCSVImport(csv,file.name);
-        if (!rows.length) { alert("No data found in Excel file."); return; }
-        setExpected(rows); setImported(true); setReviewMode(false);
+        if(!rows.length){alert("No data found.");return;}
+        setExpected(rows);setImported(true);setReviewMode(false);
       } else {
         const text=await readAsText(file);
         const rows=n.endsWith(".csv")?parseCSVImport(text,file.name):parseFile(text,file.name);
-        if (!rows.length) { alert("No data found."); return; }
-        setExpected(rows); setImported(true); setReviewMode(false);
+        if(!rows.length){alert("No data found.");return;}
+        setExpected(rows);setImported(true);setReviewMode(false);
       }
-    } catch(err) { alert("Import failed: "+err.message); }
+    }catch(err){alert("Import failed: "+err.message);}
   };
 
   const getStatus=(fileName,address,field)=>{
-    if (!reviewMode) return null;
+    if(!reviewMode) return null;
     const exp=expected.find(e=>e.fileName===fileName&&e.address===address);
-    if (!exp) return null;
+    if(!exp) return null;
     const got=results.find(r=>r.fileName===fileName&&r.address===address)?.data?.[field];
     const want=exp.data?.[field];
-    if (!got&&!want) return null;
+    if(!got&&!want) return null;
     return (got||"").trim()===(want||"").trim()?"pass":"fail";
   };
 
+  const sortedResults=[...results].sort((a,b)=>{
+    const ia=SECTOR_ORDER.indexOf(a.data?.["Sector"]||""); const ib=SECTOR_ORDER.indexOf(b.data?.["Sector"]||"");
+    const ra=ia===-1?999:ia, rb=ib===-1?999:ib;
+    if(ra!==rb) return ra-rb;
+    return parseInt(a.address||0)-parseInt(b.address||0);
+  });
+
   const loadingCount=Object.values(statuses).filter(s=>s==="loading").length;
   const doneCount=Object.values(statuses).filter(s=>s==="done").length;
-  const allSt=reviewMode?results.flatMap(r=>FIELDS.map(f=>getStatus(r.fileName,r.address,f))).filter(Boolean):[];
+  const allSt=reviewMode?sortedResults.flatMap(r=>FIELDS.map(f=>getStatus(r.fileName,r.address,f))).filter(Boolean):[];
   const passCount=allSt.filter(s=>s==="pass").length;
   const failCount=allSt.filter(s=>s==="fail").length;
 
   const chip=name=>{
-    const s=statuses[name]; if (!s) return null;
+    const s=statuses[name]; if(!s) return null;
     const cfg={loading:["#E6F1FB","#0C447C","processing…"],done:["#EAF3DE","#27500A","done"],error:["#FCEBEB","#A32D2D","error"],skipped:["#F1EFE8","#5F5E5A","skipped"],img_pdf:["#FAEEDA","#633806","image PDF — API required"]};
-    const [bg,color,label]=cfg[s]||[]; if (!bg) return null;
+    const [bg,color,label]=cfg[s]||[]; if(!bg) return null;
     return <span style={{fontSize:11,padding:"2px 8px",borderRadius:99,fontWeight:500,background:bg,color}}>{label}</span>;
   };
 
@@ -475,33 +426,35 @@ export default function App() {
           )}
         </div>
         <div style={{padding:"12px 20px",borderTop:`0.5px solid ${P.border}`,background:P.light,display:"flex",gap:10,alignItems:"center",justifyContent:"space-between"}}>
-          <button onClick={runExtraction} disabled={!files.length||loadingCount>0}
-            style={{padding:"8px 20px",fontSize:13,cursor:files.length&&!loadingCount?"pointer":"not-allowed",opacity:!files.length||loadingCount>0?.45:1,background:files.length&&!loadingCount?P.primary:"transparent",color:files.length&&!loadingCount?"#fff":P.text,border:`0.5px solid ${P.border}`,borderRadius:8}}>
-            {loadingCount>0?`Extracting ${loadingCount} file${loadingCount!==1?"s":""}…`:"Extract parameters"}
-          </button>
-          <button onClick={clearAll} disabled={!files.length&&!results.length}
-            style={{padding:"8px 20px",fontSize:13,cursor:files.length||results.length?"pointer":"not-allowed",opacity:!files.length&&!results.length?.45:1,background:"transparent",color:"#A32D2D",border:"0.5px solid #F09595",borderRadius:8}}>
-            Clear all
-          </button>
+          <div style={{display:"flex",gap:10}}>
+            <button onClick={runExtraction} disabled={!files.length||loadingCount>0}
+              style={{padding:"8px 20px",fontSize:13,cursor:files.length&&!loadingCount?"pointer":"not-allowed",opacity:!files.length||loadingCount>0?.45:1,background:files.length&&!loadingCount?P.primary:"transparent",color:files.length&&!loadingCount?"#fff":P.text,border:`0.5px solid ${P.border}`,borderRadius:8}}>
+              {loadingCount>0?`Extracting ${loadingCount} file${loadingCount!==1?"s":""}…`:"Extract parameters"}
+            </button>
+            <button onClick={clearAll} disabled={!files.length&&!results.length}
+              style={{padding:"8px 20px",fontSize:13,cursor:files.length||results.length?"pointer":"not-allowed",opacity:!files.length&&!results.length?.45:1,background:"transparent",color:"#A32D2D",border:"0.5px solid #F09595",borderRadius:8}}>
+              Clear all
+            </button>
+          </div>
           {files.length>0&&<span style={{fontSize:12,color:P.dark,opacity:.7}}>{files.length} file{files.length!==1?"s":""} ready</span>}
         </div>
       </div>
 
       {/* OUTPUT */}
       <div style={{background:"var(--color-background-primary)",border:`0.5px solid ${P.border}`,borderRadius:"var(--border-radius-lg)",overflow:"hidden"}}>
-        <SecHead icon={TblIcon} title="Extracted results" sub="One row per address block"
-          right={results.length>0&&(
+        <SecHead icon={TblIcon} title="Extracted results" sub="Sorted by sector — Alpha → Beta → Gamma → Delta → Epsilon → Zeta"
+          right={sortedResults.length>0&&(
             <div style={{display:"flex",gap:8,alignItems:"center"}}>
-              <span style={{fontSize:12,background:P.light,color:P.text,padding:"3px 10px",borderRadius:99,fontWeight:500,border:`0.5px solid ${P.border}`}}>{results.length} rows</span>
-              <button onClick={()=>exportCSV(results)} style={{padding:"6px 14px",fontSize:12,cursor:"pointer",borderRadius:8,border:`0.5px solid ${P.border}`,background:"transparent",color:P.text}}>Export CSV</button>
+              <span style={{fontSize:12,background:P.light,color:P.text,padding:"3px 10px",borderRadius:99,fontWeight:500,border:`0.5px solid ${P.border}`}}>{sortedResults.length} rows</span>
+              <button onClick={()=>exportCSV(sortedResults)} style={{padding:"6px 14px",fontSize:12,cursor:"pointer",borderRadius:8,border:`0.5px solid ${P.border}`,background:"transparent",color:P.text}}>Export CSV</button>
             </div>
           )}
         />
         <div style={{display:"grid",gridTemplateColumns:"repeat(4,minmax(0,1fr))",gap:12,padding:"16px 20px",borderBottom:`0.5px solid ${P.border}`}}>
           {[
             {label:"Files processed",val:doneCount},
-            {label:"Rows extracted",val:results.length},
-            {label:reviewMode?"Passed":"Missing values",val:reviewMode?passCount:results.reduce((a,r)=>a+FIELDS.filter(f=>!r.data?.[f]).length,0),pass:reviewMode&&passCount>0},
+            {label:"Rows extracted",val:sortedResults.length},
+            {label:reviewMode?"Passed":"Missing values",val:reviewMode?passCount:sortedResults.reduce((a,r)=>a+FIELDS.filter(f=>!r.data?.[f]).length,0),pass:reviewMode&&passCount>0},
             {label:reviewMode?"Failed":"Errors",val:reviewMode?failCount:Object.values(statuses).filter(s=>s==="error").length,fail:reviewMode&&failCount>0},
           ].map((m,i)=>(
             <div key={i} style={{background:m.fail?"#FCEBEB":m.pass?"#EAF3DE":P.light,borderRadius:"var(--border-radius-md)",padding:"10px 14px",border:`0.5px solid ${m.fail?"#F09595":m.pass?"#97C459":P.border}`}}>
@@ -526,7 +479,7 @@ export default function App() {
           )}
           {reviewMode&&<span style={{fontSize:12,color:P.dark,opacity:.7}}>Comparing extracted vs expected</span>}
         </div>
-        {results.length===0?(
+        {sortedResults.length===0?(
           <div style={{padding:"48px 20px",textAlign:"center"}}>
             <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke={P.mid} strokeWidth="1" style={{display:"block",margin:"0 auto 12px"}}>
               <rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/>
@@ -543,7 +496,7 @@ export default function App() {
                 </tr>
               </thead>
               <tbody>
-                {results.map((r,i)=>(
+                {sortedResults.map((r,i)=>(
                   <tr key={`${r.fileName}-${r.address}-${i}`} style={{background:i%2===0?"transparent":`${P.light}66`}}>
                     <td style={{...td,maxWidth:160}}>
                       <div style={{display:"flex",alignItems:"center",gap:5}}>
